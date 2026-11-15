@@ -163,8 +163,9 @@ jobs:
     steps:
       # Until `setup-homebrew` fixes their ACLs, the container user can't write the directories the runner mounts.
       # The image also has no `zstd`, without which the cache lookup misses the zstd-compressed snapshot.
-      # On failure the restore misses and `setup-homebrew` clones the tap, as before.
+      # On failure the restore is skipped and `setup-homebrew` clones the tap, as before.
       - name: Prepare container for Git cache
+        id: prepare-container
         if: matrix.container && needs.generate-matrix.outputs.git-cache-key
         continue-on-error: true
         run: |
@@ -175,9 +176,12 @@ jobs:
 
       # A full clone saved daily by `git-cache.yml`. `setup-homebrew` keeps an existing tap and only fetches newer commits.
       # No `restore-keys`: only the exact key that `generate-matrix` checked may be restored.
+      # Without the ACLs the restore can't write its outputs and would fail the job, so it needs the preparation.
       - name: Restore Git cache
         id: git-cache
-        if: needs.generate-matrix.outputs.git-cache-key
+        if: >
+          needs.generate-matrix.outputs.git-cache-key &&
+          (!matrix.container || steps.prepare-container.outcome == 'success')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .git
@@ -226,13 +230,15 @@ jobs:
           HOMEBREW_NO_INSTALL_FROM_API: ""
         run: brew test-bot --cleanup --only-cleanup-before
 
+      # An archive stores the gems' path relative to the workspace, which differs between a container and a bare
+      # runner, so neither can restore the other's. `cache.yml` saves the bare runner's under the unsuffixed key.
       - name: Cache Homebrew Gems
         id: cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.set-up-homebrew.outputs.gems-path }}
-          key: ${{ matrix.runner }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
-          restore-keys: ${{ matrix.runner }}-rubygems-
+          key: ${{ matrix.runner }}${{ matrix.container && '-container' || '' }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: ${{ matrix.runner }}${{ matrix.container && '-container' || '' }}-rubygems-
 
       - name: Cache style cache
         if: runner.os == 'macOS' && !matrix.stable
